@@ -52,6 +52,10 @@ impl LTL {
     pub fn next(self) -> LTL {
         LTL::Next(Box::new(self))
     }
+
+    pub fn eventually(self) -> LTL {
+        LTL::Eventually(Box::new(self))
+    }
 }
 
 impl Display for LTL {

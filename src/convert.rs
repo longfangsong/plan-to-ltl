@@ -59,7 +59,7 @@ pub fn collect_output(domain: &Domain, problem: &Problem) -> OutputMapping {
     OutputMapping(result)
 }
 
-fn convert_value(
+fn convert_value_with_substitution(
     value: &Value,
     substitution: &HashMap<String, String>,
     output_mapping: &OutputMapping,
@@ -68,16 +68,20 @@ fn convert_value(
         Value::And(values) => LTL::And(
             values
                 .iter()
-                .map(|value| convert_value(value, substitution, output_mapping))
+                .map(|value| convert_value_with_substitution(value, substitution, output_mapping))
                 .collect(),
         ),
         Value::Or(values) => LTL::Or(
             values
                 .iter()
-                .map(|value| convert_value(value, substitution, output_mapping))
+                .map(|value| convert_value_with_substitution(value, substitution, output_mapping))
                 .collect(),
         ),
-        Value::Not(value) => LTL::Not(Box::new(convert_value(value, substitution, output_mapping))),
+        Value::Not(value) => LTL::Not(Box::new(convert_value_with_substitution(
+            value,
+            substitution,
+            output_mapping,
+        ))),
         Value::Call(name, params) => LTL::Atom(
             output_mapping
                 .0
@@ -90,6 +94,31 @@ fn convert_value(
                         .collect_vec();
                     it_name == name && it_arguments == &arguments
                 })
+                .unwrap() as _,
+        ),
+    }
+}
+
+pub fn convert_value(value: &Value, output_mapping: &OutputMapping) -> LTL {
+    match value {
+        Value::And(values) => LTL::And(
+            values
+                .iter()
+                .map(|value| convert_value(value, output_mapping))
+                .collect(),
+        ),
+        Value::Or(values) => LTL::Or(
+            values
+                .iter()
+                .map(|value| convert_value(value, output_mapping))
+                .collect(),
+        ),
+        Value::Not(value) => LTL::Not(Box::new(convert_value(value, output_mapping))),
+        Value::Call(name, params) => LTL::Atom(
+            output_mapping
+                .0
+                .iter()
+                .position(|(it_name, it_arguments)| it_name == name && it_arguments == params)
                 .unwrap() as _,
         ),
     }
@@ -116,14 +145,18 @@ fn convert_action_with_param_set(
         action
             .preconditions
             .iter()
-            .map(|precondition| convert_value(precondition, &mapping, output_mapping))
+            .map(|precondition| {
+                convert_value_with_substitution(precondition, &mapping, output_mapping)
+            })
             .collect(),
     );
     let effects = LTL::And(
         action
             .effects
             .iter()
-            .map(|postcondition| convert_value(postcondition, &mapping, output_mapping))
+            .map(|postcondition| {
+                convert_value_with_substitution(postcondition, &mapping, output_mapping)
+            })
             .collect(),
     );
     let argument_names = arguments
@@ -158,8 +191,31 @@ pub fn convert_action(action: &Action, problem: &Problem, output_mapping: &Outpu
         .fold(LTL::Top, |acc, ltl| acc & ltl)
 }
 
+pub fn convert(domain: &Domain, problem: &Problem) -> (LTL, OutputMapping) {
+    let output_mapping = collect_output(domain, problem);
+    let actions = domain
+        .actions
+        .iter()
+        .map(|action| convert_action(action, problem, &output_mapping))
+        .fold(LTL::Top, |acc, ltl| acc & ltl);
+    let goal = problem
+        .goal
+        .iter()
+        .map(|goal| convert_value(goal, &output_mapping))
+        .fold(LTL::Top, |acc, ltl| acc & ltl)
+        .eventually();
+    let init = problem
+        .init
+        .iter()
+        .map(|predicate| convert_value(predicate, &output_mapping))
+        .fold(LTL::Top, |acc, ltl| acc & ltl);
+    (init.implies(actions & goal), output_mapping)
+}
+
 #[cfg(test)]
 mod tests {
+    use std::vec;
+
     use crate::pdc::{Parameter, Predicate};
 
     use super::*;
@@ -229,12 +285,19 @@ mod tests {
                     data_type: "Type".to_string(),
                 },
             ],
-            init: Vec::new(),
-            goal: Vec::new(),
+            init: vec![Value::Call(
+                "p0".to_string(),
+                vec!["v1".to_string(), "v2".to_string()],
+            )],
+            goal: vec![
+                Value::Call("p1".to_string(), vec!["v1".to_string()]),
+                Value::Not(Box::new(Value::Call(
+                    "p1".to_string(),
+                    vec!["v2".to_string()],
+                ))),
+            ],
         };
-        let output_mapping = collect_output(&domain, &problem);
-        let action = convert_action(&domain.actions[0], &problem, &output_mapping);
-        println!("{}", output_mapping);
-        println!("{}", action);
+        let (result, output_mapping) = convert(&domain, &problem);
+        println!("{output_mapping}\n{result}");
     }
 }
